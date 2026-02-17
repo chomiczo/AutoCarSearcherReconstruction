@@ -1,10 +1,9 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { v4 as uuidv4 } from 'uuid';
 import Scene from "../src/components/Scene";
 
 type SearchResult = { uid: string; name: string; image: string; author: string };
-// Dodaliśmy position i rotation do obiektu
 type SceneObject = { id: string; uid: string; url: string; name: string; position?: number[]; rotation?: number[] };
 
 export default function Home() {
@@ -15,9 +14,16 @@ export default function Home() {
   const [sceneModels, setSceneModels] = useState<SceneObject[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
+  const [controlMode, setControlMode] = useState<"translate" | "rotate">("translate");
+
+  // --- NOWE STANY ---
+  const [projectName, setProjectName] = useState("Bez nazwy");
+  const [cameraResetTrigger, setCameraResetTrigger] = useState(0);
+
+  // Funkcja resetująca widok
+  const resetCamera = () => setCameraResetTrigger(prev => prev + 1);
 
   // --- FUNKCJE API ---
-
   const search = async () => {
     if (!query) return;
     setSearching(true);
@@ -31,7 +37,6 @@ export default function Home() {
 
   const saveProject = async () => {
     try {
-      // Przygotowujemy dane (uzupełniamy brakujące pozycje zerami)
       const dataToSave = {
         models: sceneModels.map(m => ({
           ...m,
@@ -45,18 +50,29 @@ export default function Home() {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(dataToSave)
       });
-      alert("Projekt zapisany!");
+      const data = await res.json();
+      
+      if (data.status === "ok") {
+        setProjectName(data.filename); // Ustawiamy nazwę pliku
+        alert(data.message);
+      }
     } catch (e) { alert("Błąd zapisu!"); }
   };
 
   const loadProject = async () => {
-    if(!confirm("Wczytanie projektu nadpisze obecną scenę. Kontynuować?")) return;
+    if(sceneModels.length > 0 && !confirm("Wczytanie projektu wyczyści obecną scenę. Kontynuować?")) return;
+    
     try {
       const res = await fetch("http://127.0.0.1:8001/api/load-scene");
       const data = await res.json();
-      if(data.models) {
+      
+      if (data.status === "ok" && data.models) {
         setSceneModels(data.models);
         setSelectedModelId(null);
+        setProjectName(data.filename || "Projekt"); // Ustawiamy nazwę pliku
+        
+        // AUTOMATYCZNE CENTROWANIE (małe opóźnienie dla pewności)
+        setTimeout(() => resetCamera(), 100);
       }
     } catch (e) { alert("Błąd wczytywania!"); }
   };
@@ -68,8 +84,7 @@ export default function Home() {
     }
   };
 
-  // --- OBSŁUGA DRAG & DROP ---
-
+  // --- DRAG & DROP ---
   const handleDragStart = (e: React.DragEvent, car: SearchResult) => {
     e.dataTransfer.setData("carUid", car.uid);
     e.dataTransfer.setData("carName", car.name);
@@ -92,19 +107,19 @@ export default function Home() {
         uid: uid,
         url: data.url,
         name: name,
-        position: [0, 0, 0], // Domyślna pozycja (Scene.tsx poprawi wysokość wizualnie)
+        position: [0, 0, 0],
         rotation: [0, 0, 0]
       };
 
       setSceneModels((prev) => [...prev, newCar]);
       setSelectedModelId(newCar.id);
+      // Opcjonalnie: resetCamera(); // Możesz odkomentować, jeśli chcesz centrować po każdym dodaniu
     } catch (error) { alert("Nie udało się pobrać."); }
     setLoadingModel(false);
   };
 
   const handleDragOver = (e: React.DragEvent) => e.preventDefault();
 
-  // Aktualizacja pozycji w stanie Reacta (żeby można było zapisać)
   const handleUpdateModel = (id: string, pos: number[], rot: number[]) => {
     setSceneModels(prev => prev.map(m => m.id === id ? { ...m, position: pos, rotation: rot } : m));
   };
@@ -114,15 +129,22 @@ export default function Home() {
       
       {/* LEWY PANEL */}
       <div className="w-1/3 min-w-[350px] bg-white border-r shadow-xl flex flex-col z-10">
-        <div className="p-4 bg-gray-900 text-white flex justify-between items-center">
-          <div>
+        <div className="p-4 bg-gray-900 text-white">
+          <div className="mb-3">
             <h1 className="text-lg font-bold">Rekonstrukcja</h1>
-            <p className="text-xs text-gray-400">Panel Biegłego</p>
+            {/* Wyświetlanie nazwy pliku */}
+            <p className="text-xs text-blue-300 font-mono mt-1 truncate" title={projectName}>
+              PLIK: {projectName}
+            </p>
           </div>
-          <div className="space-x-2">
-            <button onClick={saveProject} className="text-xs bg-green-600 hover:bg-green-500 px-2 py-1 rounded">Zapisz</button>
-            <button onClick={loadProject} className="text-xs bg-blue-600 hover:bg-blue-500 px-2 py-1 rounded">Wczytaj</button>
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            <button onClick={saveProject} className="text-xs bg-green-600 hover:bg-green-500 py-2 rounded text-center">📂 Zapisz Jako...</button>
+            <button onClick={loadProject} className="text-xs bg-blue-600 hover:bg-blue-500 py-2 rounded text-center">📂 Otwórz...</button>
           </div>
+          {/* PRZYCISK CENTROWANIA WIDOKU */}
+          <button onClick={resetCamera} className="w-full text-xs bg-gray-700 hover:bg-gray-600 py-2 rounded text-center border border-gray-500">
+            🎯 Centruj Widok (Reset)
+          </button>
         </div>
 
         <div className="p-4 border-b flex gap-2">
@@ -152,10 +174,23 @@ export default function Home() {
           ))}
         </div>
 
-        {/* Panel Wybranego Pojazdu (na dole lewego paska) */}
         {selectedModelId && (
-          <div className="p-4 bg-red-50 border-t border-red-200">
-            <p className="text-xs font-bold text-red-800 mb-2">Wybrany pojazd</p>
+          <div className="p-4 bg-gray-100 border-t space-y-2">
+            <p className="text-xs font-bold text-gray-700">Sterowanie pojazdem</p>
+            <div className="flex gap-2 mb-2">
+              <button 
+                onClick={() => setControlMode("translate")}
+                className={`flex-1 py-1 text-xs rounded ${controlMode === "translate" ? "bg-blue-600 text-white" : "bg-white border"}`}
+              >
+                Przesuwanie ⬌
+              </button>
+              <button 
+                onClick={() => setControlMode("rotate")}
+                className={`flex-1 py-1 text-xs rounded ${controlMode === "rotate" ? "bg-blue-600 text-white" : "bg-white border"}`}
+              >
+                Obracanie ↻
+              </button>
+            </div>
             <button onClick={deleteSelected} className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded text-sm">
               Usuń pojazd ze sceny
             </button>
@@ -175,6 +210,8 @@ export default function Home() {
           selectedId={selectedModelId} 
           onSelect={setSelectedModelId} 
           onUpdateModel={handleUpdateModel}
+          mode={controlMode}
+          resetCameraTrigger={cameraResetTrigger}
         />
       </div>
     </div>

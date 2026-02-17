@@ -1,22 +1,26 @@
 import os
 import sys
-import threading
+import threading  # <--- Tego brakowało
 import uvicorn
 import webview
 import httpx
 import zipfile
 import io
 import json
-from fastapi import FastAPI, HTTPException, Body
+import time
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List
 
 # --- KONFIGURACJA ---
 SKETCHFAB_TOKEN = "efc936e45b554e3195cb19d38c2092ea"
 PORT = 8001
 HOST = "127.0.0.1"
+
+# Zmienna globalna tylko dla procesu głównego (okna)
+global_window = None
 
 def resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -24,12 +28,8 @@ def resource_path(relative_path):
     return os.path.join(os.path.abspath("."), relative_path)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Dokumenty użytkownika (tam będziemy też zapisywać projekty)
 USER_DOCS = os.path.join(os.path.expanduser("~"), "Documents", "AutoSearcherModels")
 MODELS_DIR = USER_DOCS
-# Plik zapisu sesji (domyślny)
-SAVE_FILE = os.path.join(USER_DOCS, "saved_scene.json")
-
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 if hasattr(sys, '_MEIPASS'):
@@ -87,7 +87,6 @@ async def search_car(query: str):
 async def download_model(uid: str):
     model_path = os.path.join(MODELS_DIR, uid)
     
-    # Funkcja pomocnicza do szukania pliku
     def find_gltf(path):
         for root, dirs, files in os.walk(path):
             for file in files:
@@ -123,33 +122,75 @@ async def download_model(uid: str):
 
 @app.post("/api/save-scene")
 async def save_scene(data: SceneData):
+    if not global_window:
+         raise HTTPException(500, "Brak dostępu do okna aplikacji")
+         
+    file_path = global_window.create_file_dialog(
+        webview.SAVE_DIALOG, 
+        directory=USER_DOCS,
+        save_filename="Projekt_Wypadku.json",
+        file_types=('Pliki JSON (*.json)', 'Wszystkie pliki (*.*)')
+    )
+
+    if not file_path:
+        return {"status": "cancelled", "message": "Anulowano zapis"}
+
+    if isinstance(file_path, (list, tuple)):
+        file_path = file_path[0]
+
     try:
-        with open(SAVE_FILE, "w") as f:
+        with open(file_path, "w") as f:
             f.write(data.model_dump_json())
-        return {"status": "ok", "message": "Zapisano pomyślnie"}
+        return {"status": "ok", "message": f"Zapisano w: {file_path}", "filename": os.path.basename(file_path)}
     except Exception as e:
         raise HTTPException(500, str(e))
 
 @app.get("/api/load-scene")
 async def load_scene():
-    if not os.path.exists(SAVE_FILE):
-        return {"models": []}
+    if not global_window:
+         return {"status": "error", "models": []}
+
+    file_path = global_window.create_file_dialog(
+        webview.OPEN_DIALOG,
+        directory=USER_DOCS,
+        file_types=('Pliki JSON (*.json)', 'Wszystkie pliki (*.*)')
+    )
+
+    if not file_path:
+        return {"status": "cancelled", "models": []}
+
+    if isinstance(file_path, (list, tuple)):
+        file_path = file_path[0]
+
     try:
-        with open(SAVE_FILE, "r") as f:
+        with open(file_path, "r") as f:
             data = json.load(f)
-        return data
+        return {"status": "ok", "models": data.get("models", []), "filename": os.path.basename(file_path)}
     except Exception as e:
-        return {"models": []}
+        return {"status": "error", "models": []}
 
 app.mount("/models", StaticFiles(directory=MODELS_DIR), name="models")
 if os.path.exists(FRONTEND_DIR):
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 def start_server():
+    # log_level="error" sprawia, że terminal jest czystszy
     uvicorn.run(app, host=HOST, port=PORT, log_level="error")
 
 if __name__ == "__main__":
-    t = threading.Thread(target=start_server, daemon=True)
-    t.start()
-    webview.create_window("Rekonstrukcja Wypadków", f"http://{HOST}:{PORT}", width=1280, height=800)
+    # 1. Uruchamiamy serwer w wątku (Daemon), żeby nie blokował okna
+    server_thread = threading.Thread(target=start_server)
+    server_thread.daemon = True
+    server_thread.start()
+
+    # 2. Tworzymy okno
+    global_window = webview.create_window("Rekonstrukcja Wypadków", f"http://{HOST}:{PORT}", width=1280, height=800)
+    
+    # 3. Startujemy pętlę okna
     webview.start()
+    
+    # 4. To wykona się DOPIERO gdy zamkniesz okno krzyżykiem (X)
+    print("Zamykanie aplikacji...")
+    
+    # 5. Brutalne zamknięcie procesów (rozwiązuje problem wiszącego terminala)
+    os._exit(0)

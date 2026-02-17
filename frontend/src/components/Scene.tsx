@@ -1,36 +1,52 @@
 "use client";
 
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, TransformControls, Grid, useGLTF, Environment } from "@react-three/drei";
 import { Suspense, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 
-// Komponent pojedynczego auta
+// --- KOMPONENT STERUJĄCY KAMERĄ ---
+function CameraHandler({ resetTrigger }: { resetTrigger: number }) {
+  const { camera, controls } = useThree() as any;
+
+  useEffect(() => {
+    if (resetTrigger > 0 && controls) {
+      // ZMIANA: Zbliżamy kamerę!
+      // Było: (5, 4, 8) -> Jest: (3, 2, 4)
+      // To znacznie przybliży widok do środka sceny
+      camera.position.set(3, 2, 4);
+      camera.lookAt(0, 0, 0);
+      
+      if (controls.target) {
+          controls.target.set(0, 0, 0);
+          controls.update();
+      }
+    }
+  }, [resetTrigger, camera, controls]);
+
+  return null;
+}
+
 function CarModel({ 
   data, 
   isSelected, 
   onClick, 
-  onTransform 
+  onTransform,
+  mode 
 }: { 
   data: any; 
   isSelected: boolean; 
   onClick: () => void;
   onTransform: (pos: [number, number, number], rot: [number, number, number]) => void;
+  mode: "translate" | "rotate";
 }) {
-const { scene } = useGLTF(data.url) as any;
-  
-  // Klonujemy scenę, żeby móc mieć wiele tych samych aut
+  const { scene } = useGLTF(data.url) as any;
   const clone = useMemo(() => scene.clone(), [scene]);
-  
-  // Automatyczna korekta wysokości (żeby auto nie było zapadnięte)
   const [yOffset, setYOffset] = useState(0);
 
   useEffect(() => {
-    // Obliczamy najniższy punkt modelu
     const box = new THREE.Box3().setFromObject(clone);
     const minY = box.min.y;
-    // Jeśli auto jest pod ziemią (minY < 0), podnosimy je o tyle w górę
-    // Dodajemy 0.01 żeby opony nie migały z asfaltem
     setYOffset(-minY + 0.01);
   }, [clone]);
 
@@ -38,14 +54,17 @@ const { scene } = useGLTF(data.url) as any;
     <>
       <TransformControls 
         object={clone}
-        mode="translate" // Możesz zmienić na "rotate" żeby obracać
+        mode={mode}
         enabled={isSelected} 
         showX={isSelected} 
         showY={isSelected} 
         showZ={isSelected}
+        space="local"
         onObjectChange={(e: any) => {
-           // Kiedy biegły przesuwa auto, zapisujemy nową pozycję
            const o = e.target.object;
+           if (o.position.y < yOffset) {
+             o.position.y = yOffset;
+           }
            onTransform(
              [o.position.x, o.position.y, o.position.z], 
              [o.rotation.x, o.rotation.y, o.rotation.z]
@@ -54,8 +73,7 @@ const { scene } = useGLTF(data.url) as any;
       />
       <primitive 
         object={clone} 
-        // Używamy pozycji z bazy danych ALBO domyślnej (z korektą wysokości)
-        position={data.position ? data.position : [0, yOffset, 0]} 
+        position={data.position ? [data.position[0], Math.max(data.position[1], yOffset), data.position[2]] : [0, yOffset, 0]} 
         rotation={data.rotation ? data.rotation : [0, 0, 0]}
         scale={1.0} 
         onClick={(e: any) => {
@@ -72,16 +90,19 @@ interface SceneProps {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onUpdateModel: (id: string, pos: number[], rot: number[]) => void;
+  mode: "translate" | "rotate";
+  resetCameraTrigger: number; 
 }
 
-export default function Scene({ models, selectedId, onSelect, onUpdateModel }: SceneProps) {
+export default function Scene({ models, selectedId, onSelect, onUpdateModel, mode, resetCameraTrigger }: SceneProps) {
   return (
     <Canvas camera={{ position: [5, 5, 5], fov: 50 }} shadows>
+      <CameraHandler resetTrigger={resetCameraTrigger} />
+
       <ambientLight intensity={0.6} />
       <directionalLight position={[10, 10, 5]} intensity={1.5} castShadow />
       <Environment preset="city" />
 
-      {/* Jezdnia */}
       <Grid infiniteGrid sectionColor="gray" cellColor="#444" fadeDistance={40} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} receiveShadow onClick={() => onSelect(null)}>
         <planeGeometry args={[200, 200]} />
@@ -96,11 +117,11 @@ export default function Scene({ models, selectedId, onSelect, onUpdateModel }: S
             isSelected={selectedId === model.id}
             onClick={() => onSelect(model.id)}
             onTransform={(pos, rot) => onUpdateModel(model.id, pos, rot)}
+            mode={mode}
           />
         ))}
       </Suspense>
 
-      {/* Kamera - wyłączamy ją gdy przesuwamy auto (żeby nie kręciła się w trakcie przesuwania) */}
       <OrbitControls makeDefault />
     </Canvas>
   );
